@@ -7,7 +7,7 @@ import numpy as np
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from clearml import Task, Model
+from clearml import Model
 
 # --- CONFIGURATION & LOGGING ---
 logging.basicConfig(level=logging.INFO)
@@ -16,51 +16,44 @@ logger = logging.getLogger("InflationAPI")
 # ML Resources container for hot-swapping
 ml_resources = {}
 
-# --- CORE LOGIC: SMART MODEL LOADER ---
+# --- CORE LOGIC: ROBUST MODEL LOADER ---
 def load_production_model():
     """
-    Fetch the latest model from the task tagged as 'winner-ARIMA' or 'production'.
+    Directly fetches the latest MODEL registered with the 'production' tag.
+    This bypasses Task lookups and goes straight to the weights.
     """
-    logger.info("Connecting to ClearML Registry via Smart Search...")
+    logger.info("Connecting to ClearML Registry...")
     
-    #  Find the latest completed task with the winner tag
-    tasks = Task.get_tasks(
-        project_name="Inflation_Forecast_2026",
-        tags=["winner-ARIMA"], 
-        task_filter={'status': ['completed']}
-    )
-    
-    if not tasks:
-        logger.warning("No task found with 'winner-ARIMA'. Trying 'production' tag...")
-        tasks = Task.get_tasks(
+    try:
+        # Search specifically for the Model object tagged 'production'
+        models = Model.query_models(
             project_name="Inflation_Forecast_2026",
             tags=["production"],
-            task_filter={'status': ['completed']}
+            only_published=False  # Set to True if you always call .publish() in train.py
         )
+        
+        if not models:
+            raise Exception("No model found with 'production' tag in ClearML Registry.")
 
-    if not tasks:
-        raise Exception("No winning tasks found with 'winner-ARIMA' or 'production' tags.")
+        # query_models returns newest first by default
+        latest_model_entry = models[0]
+        logger.info(f"Found Production Model: {latest_model_entry.name} (ID: {latest_model_entry.id})")
 
-    # Task.get_tasks returns results sorted by newest first
-    latest_task = tasks[0]
-    logger.info(f"Found winning task: {latest_task.name} (ID: {latest_task.id})")
+        # Download to local temp storage
+        local_path = latest_model_entry.get_local_copy()
+        
+        if not local_path or not os.path.exists(local_path):
+            raise Exception(f"Failed to download model weights for ID: {latest_model_entry.id}")
 
-    # Extract the model associated with this task
-    models_dict = latest_task.get_models_sdks()
-    output_models = models_dict.get('output', [])
+        with open(local_path, "rb") as f:
+            model_data = pickle.load(f)
+        
+        model_type = type(model_data).__name__
+        return model_data, latest_model_entry.id, model_type
 
-    if not output_models:
-        raise Exception(f"Task {latest_task.id} found, but it has no output models.")
-
-    # Download and Load
-    registered_model = output_models[0]
-    local_path = registered_model.get_local_copy()
-    
-    with open(local_path, "rb") as f:
-        model_data = pickle.load(f)
-    
-    model_type = type(model_data).__name__
-    return model_data, registered_model.id, model_type
+    except Exception as e:
+        logger.error(f"Error in load_production_model: {str(e)}")
+        raise e
 
 # LIFESPAN HANDLER
 @asynccontextmanager
@@ -71,9 +64,10 @@ async def lifespan(app: FastAPI):
         ml_resources["model"] = model
         ml_resources["model_id"] = m_id
         ml_resources["model_type"] = m_type
-        logger.info(f"Startup: Loaded {m_type} (ID: {m_id})")
+        logger.info(f"Startup Successful: Loaded {m_type} (ID: {m_id})")
     except Exception as e:
-        logger.error(f"Startup Fetch Failed: {e}")
+        logger.critical(f"CRITICAL STARTUP FAILURE: {e}")
+        # Initialize with None so the app stays alive but returns 503 errors
         ml_resources["model"] = None
         ml_resources["model_id"] = "none"
         ml_resources["model_type"] = "none"
@@ -85,8 +79,8 @@ async def lifespan(app: FastAPI):
 # APP INITIALIZATION 
 app = FastAPI(
     title="Nigeria Inflation Forecast API",
-    description="Production API with automated task-based model fetching.",
-    version="1.6.0",
+    description="Production API with automated Model Registry fetching.",
+    version="1.7.0",
     lifespan=lifespan
 )
 
@@ -97,12 +91,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ENDPOINTS 
+# --- ENDPOINTS ---
 
 @app.get("/", tags=["Health"])
 async def root():
     return {
         "status": "online",
+        "model_loaded": ml_resources.get("model") is not None,
         "current_model_id": ml_resources.get("model_id"),
         "model_type": ml_resources.get("model_type"),
         "timestamp": pd.Timestamp.now(tz='Africa/Lagos').isoformat()
@@ -110,6 +105,7 @@ async def root():
 
 @app.post("/refresh", tags=["Admin"])
 async def refresh_model():
+    """Triggered by the training pipeline to swap the model in-memory."""
     try:
         model, m_id, m_type = load_production_model()
         ml_resources["model"] = model
@@ -127,26 +123,32 @@ async def predict(months: int = Query(12, ge=1, le=24)):
     m_type = ml_resources.get("model_type")
     
     if not model:
-        raise HTTPException(status_code=503, detail="Model not loaded. Check ClearML tags.")
+        raise HTTPException(
+            status_code=503, 
+            detail="Model is currently unavailable. Ensure ClearML keys are set in Render."
+        )
 
     try:
-        # Generate forecast dates starting from Feb 2026
+        # Start predictions from February 2026
         dates = pd.date_range(start="2026-02-01", periods=months, freq='ME')
         
-        # Logic Router
+        # Router for different model types
         if "SARIMAX" in m_type or "ARIMAResults" in m_type:
             forecast = model.get_forecast(steps=months)
             values = forecast.predicted_mean.values
             conf = forecast.conf_int()
             low_bounds = conf.iloc[:, 0].values
             high_bounds = conf.iloc[:, 1].values
+            
         elif "Prophet" in m_type:
             future = model.make_future_dataframe(periods=months, freq='ME')
             forecast = model.predict(future).tail(months)
             values = forecast['yhat'].values
             low_bounds = forecast['yhat_lower'].values
             high_bounds = forecast['yhat_upper'].values
+            
         else:
+            # Fallback for XGBoost or simpler models
             values = model.predict(np.array(range(months)).reshape(-1, 1))
             low_bounds = values * 0.95
             high_bounds = values * 1.05
