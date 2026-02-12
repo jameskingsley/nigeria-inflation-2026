@@ -6,7 +6,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Nigeria Inflation 2026", page_icon="🇳🇬", layout="wide")
 
-# --- CUSTOM STYLING ---
+# CUSTOM STYLING 
 st.markdown("""
     <style>
     .main { background-color: #f5f7f9; }
@@ -17,16 +17,16 @@ st.markdown("""
 st.title("🇳🇬 Nigeria Inflation Forecasting Dashboard")
 st.subheader("Automated 2026 Projections via MLOps Pipeline")
 
-# --- SIDEBAR CONFIG ---
+# SIDEBAR CONFIG 
 st.sidebar.header("Deployment Settings")
 # Replace with your actual Render URL once deployed
-API_URL = st.sidebar.text_input("FastAPI URL", "https://your-api-name.onrender.com")
+API_URL = st.sidebar.text_input("FastAPI URL", "https://nigeria-inflation-2026.onrender.com")
 horizon = st.sidebar.slider("Forecast Months", 1, 24, 12)
 
-# --- DATA FETCHING ---
+#  DATA FETCHING 
 if st.button("Generate 2026 Forecast"):
     try:
-        with st.spinner('📡 Fetching latest production model predictions...'):
+        with st.spinner('Fetching latest production model predictions...'):
             response = requests.get(f"{API_URL}/predict?months={horizon}", timeout=15)
             response.raise_for_status()
             data = response.json()
@@ -34,13 +34,13 @@ if st.button("Generate 2026 Forecast"):
             df = pd.DataFrame(data['data'])
             df['date'] = pd.to_datetime(df['date'])
             
-            # --- TOP METRICS ---
+            #  TOP METRICS 
             col1, col2, col3 = st.columns(3)
             col1.metric("Current Model", data['model_type'])
             col2.metric("Avg. Forecast Rate", f"{df['rate'].mean():.2f}%")
             col3.metric("Peak Inflation", f"{df['rate'].max()}%")
 
-            # --- PLOTLY CHART ---
+            # PLOTLY CHART 
             fig = go.Figure()
             # Confidence Interval (Shaded)
             fig.add_trace(go.Scatter(
@@ -57,7 +57,7 @@ if st.button("Generate 2026 Forecast"):
             fig.update_layout(title="Inflation Rate Projection (2026)", template="plotly_white", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- DATA TABLE ---
+            #  DATA TABLE 
             with st.expander("View Raw Forecast Data"):
                 st.dataframe(df, use_container_width=True)
 
