@@ -45,11 +45,14 @@ The current production model is ARIMA, achieving a Mean Absolute Error (MAE) of 
 * Core: Python 3.10
 
 * Time Series: Statsmodels (SARIMAX), Prophet
-
+* XGB
 * MLOps: Prefect 3.0, ClearML
 
 * DevOps:  Render, GitHub Actions
 
 * UI: Plotly, Streamlit
+
+**Live Dashboard:** [View Live App](https://nigeria-inflation-2026-nt3fwyrct2rs9j9dlxglta.streamlit.app/)
+
 
 Maintained by **James Kingsley**  Looking to leverage data to solve economic challenges in emerging markets.
